@@ -22,11 +22,27 @@ import time
 import random
 import boto3
 import uuid
+import logging
+from datetime import datetime
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('fashion_api.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
-MODEL_IMAGE_PATH = "model_photo.jpg"  # Replace with your model image path
+MODEL_IMAGE_PATH = "new_m_p.jpg"  # Replace with your model image path
 IMAGE_GENERATION_MODEL = os.getenv('IMAGE_GENERATION_MODEL')  # Replace with your desired model
 S3_BUCKET_NAME = os.getenv('S3_BUCKET')
+
+logger.info("Initializing Fashion Fitter API...")
+logger.info(f"IMAGE_GENERATION_MODEL: {IMAGE_GENERATION_MODEL}")
+logger.info(f"S3_BUCKET_NAME: {S3_BUCKET_NAME}")
 
 app = FastAPI(title="Fashion Fitter API", description="API to generate fashion photos by combining dress and model images")
 
@@ -40,29 +56,39 @@ app.add_middleware(
 # Initialize Google Gemini client with API key
 api_key = os.getenv('GOOGLE_API_KEY')
 if not api_key:
+    logger.error("GOOGLE_API_KEY environment variable is missing!")
     raise ValueError("GOOGLE_API_KEY environment variable is required. Please set your Google AI Studio API key.")
 
+logger.info("Initializing Google Gemini client...")
 client = genai.Client(api_key=api_key)
+logger.info("Google Gemini client initialized successfully")
 
 # Clear closets collection on startup
-print("🚀 Starting Fashion Fitter API...")
+logger.info("🚀 Starting Fashion Fitter API...")
+logger.info("Clearing closets collection on startup...")
 clear_result = clear_closets_collection()
 if clear_result["success"]:
-    print(f"✅ Startup: {clear_result['message']} ({clear_result['deleted_count']} items removed)")
+    logger.info(f"✅ Startup: {clear_result['message']} ({clear_result['deleted_count']} items removed)")
 else:
-    print(f"⚠️ Startup warning: {clear_result['message']}")
+    logger.warning(f"⚠️ Startup warning: {clear_result['message']}")
 
 def scrape_amazon_product(url):
+    logger.info(f"Starting Amazon product scraping for URL: {url}")
     headers = {
         "User-Agent": random.choice([
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.114 Safari/537.36"
         ])
     }
-    time.sleep(random.uniform(1, 3))  # Random delay to avoid blocking
+    delay = random.uniform(1, 3)
+    logger.debug(f"Adding random delay of {delay:.2f} seconds to avoid blocking")
+    time.sleep(delay)  # Random delay to avoid blocking
+
+    logger.info(f"Making HTTP request to: {url}")
     response = requests.get(url, headers=headers)
 
     if response.status_code == 200:
+        logger.info(f"Successfully received response from Amazon (status: {response.status_code})")
         soup = BeautifulSoup(response.text, 'html.parser')
 
         # Extract Product Title
@@ -75,6 +101,7 @@ def scrape_amazon_product(url):
 
         # Extract High-Resolution Image URLs using regex
         image_urls = re.findall('"hiRes":"(https://.+?)"', response.text)
+        logger.info(f"Found {len(image_urls)} high-resolution images")
 
         # Get breadcrumbs text
         breadcrumbs = soup.select("#wayfinding-breadcrumbs_feature_div ul li span a")
@@ -84,7 +111,7 @@ def scrape_amazon_product(url):
         product_about_ul = soup.find("ul", {"class": "a-unordered-list a-vertical a-spacing-small"})
         product_about_info = [li.get_text(strip=True) for li in product_about_ul.find_all("li")] if product_about_ul else []
 
-        return {
+        product_data = {
             'url': url,
             'title': title,
             'price': price,
@@ -92,19 +119,21 @@ def scrape_amazon_product(url):
             'size': size,
             'category': category,
             'product_about_info': product_about_info
-        }, image_urls
+        }
+
+        logger.info(f"Successfully scraped product: {title[:50]}...")
+        logger.debug(f"Product data: {product_data}")
+
+        return product_data, image_urls
     else:
-        print(f"Failed to fetch data from {url}")
+        logger.error(f"Failed to fetch data from {url} - HTTP Status: {response.status_code}")
         return None
 
 @app.post("/generate-photo-and-data")
 async def generate_photo_and_data(
     url: str = Form(..., description="Amazon product URL to scrape"),
     prompt: Optional[str] = Form(
-        default="""Create a professional e-commerce fashion photo.
-        Take the dress from the first image and let the person from the second image wear it.
-        Generate a realistic, full-body shot of the person wearing the dress, with the lighting and shadows adjusted to match the environment.
-        """,
+        default="""IMPORTANT: Keep the person from the second image EXACTLY the same - same face, same body, same pose, same everything. Only change the clothing to match the item from the first image. Preserve the person's identity, appearance, and background. Create a professional fashion photo with the same lighting and style.""",
         description="Custom prompt for image generation"
     )
 ):
@@ -112,34 +141,46 @@ async def generate_photo_and_data(
     Generate a fashion photo by combining a dress image with a model image.
     Returns the generated image as base64 encoded string.
     """
+    logger.info(f"Starting photo generation request for URL: {url}")
+    logger.debug(f"Custom prompt provided: {prompt[:100]}...")
 
     page_metadata, image_urls = scrape_amazon_product(url)
     if not page_metadata or not image_urls:
-        print(page_metadata, image_urls)
+        logger.error(f"Failed to scrape product data. Metadata: {page_metadata}, Images found: {len(image_urls) if image_urls else 0}")
         raise HTTPException(status_code=400, detail="Failed to scrape product data or no images found from the provided URL")
 
     if len(image_urls) >= 1:
         dress_image_url = image_urls[0]
+        logger.info(f"Selected dress image URL: {dress_image_url}")
     else:
+        logger.error("No product images found from the provided URL")
         raise HTTPException(status_code=400, detail="No product images found from the provided URL")
 
     # Download the dress image from the URL
     try:
+        logger.info("Downloading dress image from URL...")
         dress_response = requests.get(dress_image_url)
         dress_response.raise_for_status()
         dress_pil = Image.open(BytesIO(dress_response.content))
+        logger.info(f"Successfully downloaded dress image - Size: {dress_pil.size}")
     except Exception as e:
+        logger.error(f"Failed to download dress image: {str(e)}")
         raise HTTPException(status_code=400, detail=f"Failed to download dress image: {str(e)}")
 
     # Load the local model image
     try:
+        logger.info(f"Loading model image from: {MODEL_IMAGE_PATH}")
         with open(MODEL_IMAGE_PATH, 'rb') as model_file:
             model_bytes = model_file.read()
         model_pil = Image.open(BytesIO(model_bytes))
+        logger.info(f"Successfully loaded model image - Size: {model_pil.size}")
     except Exception as e:
+        logger.error(f"Failed to load model image: {str(e)}")
         raise HTTPException(status_code=400, detail=f"Failed to load model image: {str(e)}")
 
     try:
+        logger.info("Starting image generation with Google Gemini...")
+        logger.debug(f"Using model: {IMAGE_GENERATION_MODEL}")
 
         response = client.models.generate_content(
             model=IMAGE_GENERATION_MODEL,
@@ -153,23 +194,31 @@ async def generate_photo_and_data(
         ]
 
         if not image_parts:
+            logger.error("No image generated from the model")
             raise HTTPException(status_code=500, detail="No image generated from the model")
 
+        logger.info("Successfully generated image from Gemini")
         generated_image = Image.open(BytesIO(image_parts[0]))
+        logger.info(f"Generated image size: {generated_image.size}")
 
         # Convert PIL image to buffer for S3 upload
         buffer = BytesIO()
         generated_image.save(buffer, format='PNG')
+        logger.debug("Image converted to PNG buffer")
 
         # Upload image to S3 and make it publicly accessible
+        logger.info("Uploading image to S3...")
         s3_client = boto3.client("s3")
         bucket_name = S3_BUCKET_NAME
         s3_key = f"generated_images/{uuid.uuid4()}.png"
+        logger.debug(f"S3 upload - Bucket: {bucket_name}, Key: {s3_key}")
 
         buffer.seek(0)
         s3_client.upload_fileobj(buffer, bucket_name, s3_key, ExtraArgs={'ContentType': 'image/png'})
         image_url = s3_client.generate_presigned_url('get_object', Params={'Bucket': bucket_name, 'Key': s3_key}, ExpiresIn=3600)  # 1 hour expiry
+        logger.info(f"Successfully uploaded image to S3: {s3_key}")
 
+        logger.info("Photo generation completed successfully")
         return JSONResponse(content={
             "success": True,
             "image_public_url": image_url,
@@ -178,6 +227,7 @@ async def generate_photo_and_data(
         })
 
     except Exception as e:
+        logger.error(f"Error generating fashion photo: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error generating fashion photo: {str(e)}")
 
 @app.post("/search-products")
@@ -193,12 +243,16 @@ async def search_products_endpoint(
     Returns:
         JSON response with matching products (max 10)
     """
+    logger.info(f"Product search request received - Query: '{query}'")
     try:
         if not query or not query.strip():
+            logger.warning("Empty or invalid query provided")
             raise HTTPException(status_code=400, detail="Query parameter is required and cannot be empty")
 
         # Call the MongoDB query function
+        logger.info(f"Searching products in MongoDB for query: '{query.strip()}'")
         results = query_products(query.strip())
+        logger.info(f"Found {len(results)} products matching the query")
 
         # Format the response
         formatted_results = []
@@ -234,6 +288,7 @@ async def search_products_endpoint(
             }
             formatted_results.append(formatted_product)
 
+        logger.info(f"Successfully formatted {len(formatted_results)} products for response")
         return JSONResponse(content={
             "success": True,
             "query": query,
@@ -242,6 +297,7 @@ async def search_products_endpoint(
         })
 
     except Exception as e:
+        logger.error(f"Error searching products: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error searching products: {str(e)}")
 
 @app.post("/add-to-closet")
