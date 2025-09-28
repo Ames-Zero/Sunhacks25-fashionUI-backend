@@ -432,8 +432,9 @@ async def get_outfit_suggestions_endpoint(
                 "query": result["query"],
                 "total_closet_items": result["total_closet_items"],
                 "message": result["message"],
-                "stylist_suggestions": result["stylist_suggestions"],
-                "available_items_count": result["available_items"]
+                "outfit_suggestion": result["outfit_suggestion"],
+                "suggested_items": result["suggested_items"],
+                "suggested_items_count": len(result["suggested_items"])
             })
         else:
             # Handle case where no items found or other errors
@@ -443,9 +444,10 @@ async def get_outfit_suggestions_endpoint(
                         "success": False,
                         "query": query,
                         "message": result["message"],
-                        "stylist_suggestions": "I'd love to help you style an outfit, but it looks like your closet is empty! Start by adding some items to your closet collection, and I'll be able to suggest amazing outfits for any occasion.",
+                        "outfit_suggestion": "I'd love to help you style an outfit, but it looks like your closet is empty! Start by adding some items to your closet collection, and I'll be able to suggest amazing outfits for any occasion.",
+                        "suggested_items": [],
                         "total_closet_items": 0,
-                        "available_items_count": 0
+                        "suggested_items_count": 0
                     },
                     status_code=404
                 )

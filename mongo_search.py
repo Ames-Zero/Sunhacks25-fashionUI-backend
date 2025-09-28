@@ -438,11 +438,12 @@ def get_outfit_suggestions_with_llm(user_query):
         user_query (str): Natural language query about the occasion or outfit preference
         
     Returns:
-        dict: Outfit suggestions with LLM-generated explanation
+        dict: Outfit suggestions with LLM-generated explanation and suggested items
     """
     try:
         from google import genai
         import os
+        import json
         
         # Get all closet items
         closet_items = get_all_closet_items()
@@ -451,54 +452,50 @@ def get_outfit_suggestions_with_llm(user_query):
             return {
                 "success": False,
                 "message": "No items found in closet",
-                "suggestions": []
+                "outfit_suggestion": "",
+                "suggested_items": []
             }
         
-        # Format closet items for LLM
-        items_description = []
-        for item in closet_items:
-            item_desc = {
-                "id": str(item.get("_id", "")),
-                "name": item.get("product_name") or item.get("title", "Unknown Item"),
-                "category": item.get("category", "N/A"),
-                "subcategory": item.get("subcategory", "N/A"),
-                "colors": item.get("colors", {}),
-                "brand": item.get("brand", "N/A"),
-                "price": item.get("metadata", {}).get("price", "N/A"),
-                "type": item.get("type", "N/A")
-            }
-            
-            # Create a readable description
-            primary_color = item_desc["colors"].get("primary", "unknown color")
-            secondary_color = item_desc["colors"].get("secondary", "")
+        # Format closet items for LLM with numbered IDs
+        items_for_llm = []
+        for i, item in enumerate(closet_items):
+            primary_color = item.get("colors", {}).get("primary", "unknown color")
+            secondary_color = item.get("colors", {}).get("secondary", "")
             color_desc = f"{primary_color}" + (f" with {secondary_color}" if secondary_color and secondary_color != primary_color else "")
             
-            formatted_desc = f"- {item_desc['name']} ({item_desc['subcategory']}) in {color_desc} by {item_desc['brand']} - ${item_desc['price']}"
-            items_description.append(formatted_desc)
+            item_desc = f"{i+1}. {item.get('product_name') or item.get('title', 'Unknown Item')} ({item.get('subcategory', 'N/A')}) in {color_desc} by {item.get('brand', 'N/A')}"
+            items_for_llm.append(item_desc)
         
         # Create prompt for Gemini
-        closet_items_text = "\n".join(items_description)
+        closet_items_text = "\n".join(items_for_llm)
         
         prompt = f"""
-You are a professional fashion stylist with years of experience. A user is asking for outfit suggestions from their personal closet for the following occasion/query: "{user_query}"
+You are a professional fashion stylist. A user wants outfit suggestions for: "{user_query}"
 
-Here are all the items available in their closet:
+Available items in their closet (numbered):
 {closet_items_text}
 
-Please provide outfit suggestions that:
-1. Are appropriate for the occasion mentioned in the query
-2. Use only the items available in their closet
-3. Consider color coordination, style matching, and appropriateness
-4. Include styling tips and explanations for your choices
+Your task:
+1. Pick the item numbers that would work best for this occasion
+2. Write a concise outfit suggestion (1-2 sentences, under 250 characters)
 
-Format your response as follows:
-- Suggest 2-3 complete outfit combinations if possible
-- For each outfit, explain why it works for the occasion
-- Provide styling tips (accessories, how to wear, etc.)
-- If the closet lacks certain essential items for the occasion, mention what's missing
-- Be encouraging and positive in your tone
+Respond in this EXACT JSON format:
+{{
+  "outfit_suggestion": "Your concise styling advice here",
+  "item_numbers": [list of numbers like 1, 2, 3 for the items you recommend]
+}}
 
-Keep your response conversational and helpful, as if you're a personal stylist talking to a friend.
+Requirements:
+- Only use item numbers from the list above
+- Keep outfit_suggestion brief but helpful (under 250 characters)
+- Consider color coordination and occasion appropriateness
+- Focus on practical styling advice
+
+Example:
+{{
+  "outfit_suggestion": "For a business meeting, pair the navy blazer with white shirt and dark jeans. Classic and professional.",
+  "item_numbers": [1, 2, 3]
+}}
 """
 
         # Initialize Gemini client
@@ -507,7 +504,8 @@ Keep your response conversational and helpful, as if you're a personal stylist t
             return {
                 "success": False,
                 "message": "Google API key not configured",
-                "suggestions": []
+                "outfit_suggestion": "",
+                "suggested_items": []
             }
         
         client = genai.Client(api_key=api_key)
@@ -522,19 +520,71 @@ Keep your response conversational and helpful, as if you're a personal stylist t
         if response.candidates and len(response.candidates) > 0:
             suggestion_text = response.candidates[0].content.parts[0].text
             
-            return {
-                "success": True,
-                "query": user_query,
-                "total_closet_items": len(closet_items),
-                "stylist_suggestions": suggestion_text,
-                "available_items": len(closet_items),
-                "message": "Outfit suggestions generated successfully"
-            }
+            try:
+                # Parse JSON response from LLM
+                # Clean the response text (remove any markdown formatting)
+                clean_text = suggestion_text.strip()
+                if clean_text.startswith('```json'):
+                    clean_text = clean_text[7:]
+                if clean_text.endswith('```'):
+                    clean_text = clean_text[:-3]
+                clean_text = clean_text.strip()
+                
+                parsed_response = json.loads(clean_text)
+                
+                # Extract suggested item numbers and get the actual items
+                suggested_item_numbers = parsed_response.get("item_numbers", [])
+                suggested_items = []
+                
+                for item_number in suggested_item_numbers:
+                    # Convert to 0-based index
+                    try:
+                        index = int(item_number) - 1
+                        if 0 <= index < len(closet_items):
+                            item = closet_items[index]
+                            formatted_item = {
+                                "id": str(item.get("_id", "")),
+                                "product_name": item.get("product_name") or item.get("title", "N/A"),
+                                "brand": item.get("brand", "N/A"),
+                                "category": item.get("category", "N/A"),
+                                "subcategory": item.get("subcategory", "N/A"),
+                                "colors": item.get("colors", {}),
+                                "price": item.get("metadata", {}).get("price", "N/A"),
+                                "image_url": item.get("image_url", "") or item.get("urls", {}).get("image", ""),
+                                "product_url": item.get("product_url", "") or item.get("urls", {}).get("product", "")
+                            }
+                            suggested_items.append(formatted_item)
+                    except (ValueError, IndexError):
+                        continue
+                
+                # Get the AI's concise suggestion (not truncated)
+                outfit_suggestion = parsed_response.get("outfit_suggestion", "")
+                
+                return {
+                    "success": True,
+                    "query": user_query,
+                    "total_closet_items": len(closet_items),
+                    "outfit_suggestion": outfit_suggestion,  # Use AI's complete suggestion
+                    "suggested_items": suggested_items,
+                    "message": "Outfit suggestions generated successfully"
+                }
+                
+            except json.JSONDecodeError:
+                # Fallback: if JSON parsing fails, return the raw text as suggestion
+                return {
+                    "success": True,
+                    "query": user_query,
+                    "total_closet_items": len(closet_items),
+                    "outfit_suggestion": suggestion_text,  # Use complete text without truncation
+                    "suggested_items": [],
+                    "message": "Outfit suggestions generated successfully (fallback mode)"
+                }
         else:
             return {
                 "success": False,
                 "message": "Failed to generate outfit suggestions from LLM",
-                "suggestions": []
+                "outfit_suggestion": "",
+                "suggested_items": []
             }
             
     except Exception as e:
@@ -542,7 +592,8 @@ Keep your response conversational and helpful, as if you're a personal stylist t
         return {
             "success": False,
             "message": f"Error generating outfit suggestions: {str(e)}",
-            "suggestions": []
+            "outfit_suggestion": "",
+            "suggested_items": []
         }
 
 def get_closet_summary():

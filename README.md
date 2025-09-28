@@ -284,8 +284,36 @@ curl -X POST "http://localhost:8000/outfit-suggestions" \
   "query": "business meeting",
   "total_closet_items": 15,
   "message": "Outfit suggestions generated successfully",
-  "stylist_suggestions": "For your business meeting, I recommend...\n\n**Outfit 1: Classic Professional**\n- Navy blue blazer paired with white dress shirt\n- Dark wash jeans (opt for dress pants if available)\n- Black leather dress shoes\n\nThis combination projects confidence and professionalism while remaining approachable...",
-  "available_items_count": 15
+  "outfit_suggestion": "For a business meeting, pair the navy blazer with white shirt and dark jeans. The classic combination projects confidence while remaining approachable.",
+  "suggested_items": [
+    {
+      "id": "closet_item_id_1",
+      "product_name": "Navy Blue Blazer",
+      "brand": "Calvin Klein",
+      "category": "Clothing",
+      "subcategory": "Jackets & Coats",
+      "colors": {
+        "primary": "navy blue"
+      },
+      "price": "149.99",
+      "image_url": "https://...",
+      "product_url": "https://..."
+    },
+    {
+      "id": "closet_item_id_2",
+      "product_name": "White Cotton Dress Shirt",
+      "brand": "Brooks Brothers",
+      "category": "Clothing",
+      "subcategory": "Shirts",
+      "colors": {
+        "primary": "white"
+      },
+      "price": "79.99",
+      "image_url": "https://...",
+      "product_url": "https://..."
+    }
+  ],
+  "suggested_items_count": 2
 }
 ```
 
@@ -295,9 +323,10 @@ curl -X POST "http://localhost:8000/outfit-suggestions" \
   "success": false,
   "query": "business meeting",
   "message": "No items found in closet collection",
-  "stylist_suggestions": "I'd love to help you style an outfit, but it looks like your closet is empty! Start by adding some items to your closet collection, and I'll be able to suggest amazing outfits for any occasion.",
+  "outfit_suggestion": "I'd love to help you style an outfit, but it looks like your closet is empty! Start by adding some items to your closet collection, and I'll be able to suggest amazing outfits for any occasion.",
+  "suggested_items": [],
   "total_closet_items": 0,
-  "available_items_count": 0
+  "suggested_items_count": 0
 }
 ```
 
