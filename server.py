@@ -1,12 +1,13 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Form
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Body
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from google import genai
 from google.genai import types
 from PIL import Image
 from io import BytesIO
-from typing import Optional
+from typing import Optional, Dict, Any
 from bs4 import BeautifulSoup
+from mongo_search import query_products, add_to_closet
 
 import re
 import os
@@ -158,6 +159,94 @@ async def generate_photo_and_data(
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error generating fashion photo: {str(e)}")
+
+@app.post("/search-products")
+async def search_products_endpoint(
+    query: str = Form(..., description="Natural language query like 'blue shirts' or 'red t-shirts'")
+):
+    """
+    Search products using natural language query
+    
+    Args:
+        query: Natural language search query (e.g., "blue shirts", "red t-shirts")
+    
+    Returns:
+        JSON response with matching products (max 10)
+    """
+    try:
+        if not query or not query.strip():
+            raise HTTPException(status_code=400, detail="Query parameter is required and cannot be empty")
+        
+        # Call the MongoDB query function
+        results = query_products(query.strip())
+        
+        # Format the response
+        formatted_results = []
+        for product in results:
+            formatted_product = {
+                "id": str(product.get("_id", "")),
+                "product_name": product.get("product_name", "N/A"),
+                "brand": product.get("brand", "N/A"),
+                "category": product.get("category", "N/A"),
+                "subcategory": product.get("subcategory", "N/A"),
+                "colors": product.get("colors", {}),
+                "price": product.get("metadata", {}).get("price", "N/A"),
+                "rating": product.get("metadata", {}).get("rating", "N/A"),
+                "image_url": product.get("urls", {}).get("image", ""),
+                "product_url": product.get("urls", {}).get("product", ""),
+                "attributes": product.get("attributes", {})
+            }
+            formatted_results.append(formatted_product)
+        
+        return JSONResponse(content={
+            "success": True,
+            "query": query,
+            "total_results": len(results),
+            "products": formatted_results
+        })
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error searching products: {str(e)}")
+
+@app.post("/add-to-closet")
+async def add_to_closet_endpoint(
+    closet_item: Dict[Any, Any] = Body(..., description="Item data to add to closet")
+):
+    """
+    Add an item to the user's closet collection
+    
+    Args:
+        closet_item: Dictionary containing the item data to add to closet
+    
+    Returns:
+        JSON response with insertion confirmation
+    """
+    try:
+        if not closet_item:
+            raise HTTPException(status_code=400, detail="Closet item data is required")
+        
+        # Validate required fields (basic validation)
+        if "type" not in closet_item:
+            closet_item["type"] = "manual_add"  # Default type
+        
+        # Call the MongoDB add function
+        result_id = add_to_closet(closet_item)
+        
+        if result_id:
+            return JSONResponse(content={
+                "success": True,
+                "message": "Item successfully added to closet",
+                "closet_item_id": closet_item.get("closet_item_id"),
+                "mongodb_id": result_id,
+                "item_type": closet_item.get("type", "unknown")
+            })
+        else:
+            raise HTTPException(status_code=500, detail="Failed to add item to closet")
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error adding item to closet: {str(e)}")
 
 @app.get("/")
 async def root():
