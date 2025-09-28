@@ -8,6 +8,7 @@ from PIL import Image
 from io import BytesIO
 from typing import Optional, Dict, Any
 from bs4 import BeautifulSoup
+from pydantic import BaseModel
 from mongo_search import query_products, add_to_closet, add_product_to_closet, get_all_closet_items, clear_closets_collection, get_outfit_suggestions_with_llm
 from dotenv import load_dotenv
 
@@ -35,6 +36,20 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+# Pydantic models for JSON request validation
+class SearchProductsRequest(BaseModel):
+    query: str
+
+class AddToClosetRequest(BaseModel):
+    product_id: str
+
+class OutfitSuggestionsRequest(BaseModel):
+    query: str
+
+class PhotoGenerationRequest(BaseModel):
+    url: str
+    prompt: Optional[str] = """IMPORTANT: Keep the person from the second image EXACTLY the same - same face, same body, same pose, same everything. Only change the clothing to match the item from the first image. Preserve the person's identity, appearance, and background. Create a professional fashion photo with the same lighting and style."""
 
 MODEL_IMAGE_PATH = "new_m_p.jpg"  # Replace with your model image path
 IMAGE_GENERATION_MODEL = os.getenv('IMAGE_GENERATION_MODEL')  # Replace with your desired model
@@ -130,17 +145,13 @@ def scrape_amazon_product(url):
         return None
 
 @app.post("/generate-photo-and-data")
-async def generate_photo_and_data(
-    url: str = Form(..., description="Amazon product URL to scrape"),
-    prompt: Optional[str] = Form(
-        default="""IMPORTANT: Keep the person from the second image EXACTLY the same - same face, same body, same pose, same everything. Only change the clothing to match the item from the first image. Preserve the person's identity, appearance, and background. Create a professional fashion photo with the same lighting and style.""",
-        description="Custom prompt for image generation"
-    )
-):
+async def generate_photo_and_data(request: PhotoGenerationRequest):
     """
     Generate a fashion photo by combining a dress image with a model image.
     Returns the generated image as base64 encoded string.
     """
+    url = request.url
+    prompt = request.prompt
     logger.info(f"Starting photo generation request for URL: {url}")
     logger.debug(f"Custom prompt provided: {prompt[:100]}...")
 
@@ -231,18 +242,17 @@ async def generate_photo_and_data(
         raise HTTPException(status_code=500, detail=f"Error generating fashion photo: {str(e)}")
 
 @app.post("/search-products")
-async def search_products_endpoint(
-    query: str = Form(..., description="Natural language query like 'blue shirts' or 'red t-shirts'")
-):
+async def search_products_endpoint(request: SearchProductsRequest):
     """
     Search products using natural language query
 
     Args:
-        query: Natural language search query (e.g., "blue shirts", "red t-shirts")
+        request: JSON request containing query string
 
     Returns:
         JSON response with matching products (max 10)
     """
+    query = request.query
     logger.info(f"Product search request received - Query: '{query}'")
     try:
         if not query or not query.strip():
@@ -301,19 +311,18 @@ async def search_products_endpoint(
         raise HTTPException(status_code=500, detail=f"Error searching products: {str(e)}")
 
 @app.post("/add-to-closet")
-async def add_to_closet_endpoint(
-    product_id: str = Form(..., description="Product ID from the products collection")
-):
+async def add_to_closet_endpoint(request: AddToClosetRequest):
     """
     Add a product to the closet collection using product ID
     
     Args:
-        product_id: MongoDB _id of the product from products collection
+        request: JSON request containing product_id
         
     Returns:
         JSON response with insertion confirmation
     """
     try:
+        product_id = request.product_id
         if not product_id or not product_id.strip():
             raise HTTPException(status_code=400, detail="Product ID is required")
         
@@ -407,19 +416,18 @@ async def clear_closet_items_endpoint():
         raise HTTPException(status_code=500, detail=f"Error clearing closet items: {str(e)}")
 
 @app.post("/outfit-suggestions")
-async def get_outfit_suggestions_endpoint(
-    query: str = Form(..., description="Natural language query describing the occasion or outfit preference")
-):
+async def get_outfit_suggestions_endpoint(request: OutfitSuggestionsRequest):
     """
     Get AI-powered outfit suggestions based on closet items and natural language query
     
     Args:
-        query: Natural language query like "casual date night", "business meeting", "weekend brunch"
+        request: JSON request containing query string
         
     Returns:
         JSON response with AI-generated outfit suggestions from closet items
     """
     try:
+        query = request.query
         if not query or not query.strip():
             raise HTTPException(status_code=400, detail="Query parameter is required and cannot be empty")
         
