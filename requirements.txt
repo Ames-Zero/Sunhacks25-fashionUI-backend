@@ -9,3 +9,4 @@ Requests==2.32.5
 uvicorn==0.37.0
 google-genai==1.39.1
 pymongo==4.15.1
+python-multipart==0.0.20
