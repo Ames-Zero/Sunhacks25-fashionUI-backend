@@ -5,10 +5,8 @@ A FastAPI application that generates professional fashion photos by combining dr
 ## Features
 
 - **REST API**: Upload dress and model images via HTTP endpoints
-- **Base64 Output**: Returns generated images as base64-encoded strings
 - **Custom Prompts**: Customize the image generation with your own prompts
 - **Interactive Documentation**: Built-in Swagger UI for API testing
-- **Test Client**: Simple HTML interface for easy testing
 
 ## Setup
 
@@ -20,30 +18,20 @@ A FastAPI application that generates professional fashion photos by combining dr
 
 ### Installation
 
-1. **Activate your virtual environment** (if using one):
-   ```bash
-   source hacksun/bin/activate
-   ```
 
-2. **Install dependencies**:
+1. **Install dependencies**:
    ```bash
    pip install -r requirements.txt
    ```
 
-3. **Set up Google Gemini API**:
+2. **Set up Google Gemini API**:
    - Get your API key from Google AI Studio
    - Set it as an environment variable or configure it in your application
 
 ### Running the Server
 
-**Option 1: Use the startup script**
 ```bash
-./run_server.sh
-```
-
-**Option 2: Run directly**
-```bash
-python fastapi_fitter.py
+python server.py
 ```
 
 The server will start on `http://localhost:8000`
@@ -55,16 +43,23 @@ The server will start on `http://localhost:8000`
 Generate a fashion photo by combining a dress image with a model image.
 
 **Parameters:**
-- `dress_image` (file): Image of the dress on a plain background
-- `model_image` (file): Image of the model
+- `url` (string): amazon product URL
 - `prompt` (optional string): Custom prompt for image generation
 
 **Response:**
 ```json
 {
   "success": true,
-  "message": "Fashion photo generated successfully",
-  "image_base64": "iVBORw0KGgoAAAANSUhEUgAA...",
+  "image_public_url": "<[S3 URL]>",
+  "metadata": {
+    "url": "<[orignal product URL]>",
+    "title": "...",
+    "price": "...",
+    "color": "...",
+    "size": ".",
+    "category": "...",
+    "product_about_info": "additionalproductinfo - list format"
+  },
   "image_format": "PNG"
 }
 ```
@@ -81,78 +76,50 @@ Interactive API documentation (Swagger UI)
 ### `GET /test`
 Test client HTML interface
 
-## Usage Examples
 
-### Using curl
-```bash
-curl -X POST "http://localhost:8000/generate-fashion-photo" \
-     -H "accept: application/json" \
-     -H "Content-Type: multipart/form-data" \
-     -F "dress_image=@dress.jpg" \
-     -F "model_image=@model.jpg" \
-     -F "prompt=Create a professional fashion photo..."
-```
 
-### Using the Test Client
-1. Navigate to `http://localhost:8000/test`
-2. Upload your dress and model images
-3. Optionally customize the prompt
-4. Click "Generate Fashion Photo"
-5. View the generated image
 
 ### Using Python requests
 ```python
-import requests
-import base64
-from PIL import Image
-from io import BytesIO
-
-# Prepare files
-with open('dress.jpg', 'rb') as dress_file, open('model.jpg', 'rb') as model_file:
-    files = {
-        'dress_image': dress_file,
-        'model_image': model_file
-    }
-    data = {
-        'prompt': 'Create a professional e-commerce fashion photo...'
-    }
-    
-    response = requests.post('http://localhost:8000/generate-fashion-photo', 
-                           files=files, data=data)
-
-if response.status_code == 200:
-    result = response.json()
-    if result['success']:
-        # Decode base64 image
-        image_data = base64.b64decode(result['image_base64'])
-        image = Image.open(BytesIO(image_data))
-        image.save('generated_fashion_photo.png')
-        print("Image saved as generated_fashion_photo.png")
+test_url = "https://www.amazon.in/Lymio-Casual-Stylish-Insta-Shirt-Regular/dp/B0DRNHN591/ref=sxin_15_pa_sp_search_thematic_sspa?cv_ct_cx=shirts+for+men+stylish&sbo=RZvfv%2F%2FHxDF%2BO5021pAnSA%3D%3D&sr=1-1-883a54c7-f466-4d42-997c-6d482a360a1a-spons&sp_csd=d2lkZ2V0TmFtZT1zcF9zZWFyY2hfdGhlbWF0aWM&psc=1"
+        
+        # Prepare the request data
+        data = {
+            'url': test_url,
+            'prompt': 'Create a professional e-commerce fashion photo. Take the Hawaiian shirt from the first image and let the man from the second image wear it. Generate a realistic, full-body shot of the man wearing the shirt with proper lighting.'
+        }
+        
+        print(f"Testing with URL: {test_url}")
+        print("Sending request to API...")
+        
+        start_time = time.time()
+        
+        # Make the request to the new endpoint
+        response = requests.post(
+            'http://localhost:8000/generate-photo-and-data',
+            data=data,
+            timeout=120  # Increased timeout for scraping + AI generation
+        )
+        
+        # Check response
+        if response.status_code == 200:
+            return response.json()
 ```
 
 ## File Structure
 
 ```
-├── fastapi_fitter.py      # Main FastAPI application
-├── fitter.py             # Original script (reference)
+├── server.py      # Main FastAPI application
 ├── requirements.txt      # Python dependencies
-├── run_server.sh        # Startup script
-├── test_client.html     # HTML test interface
 └── README.md           # This file
 ```
 
-## Error Handling
 
-The API includes comprehensive error handling:
-- File type validation
-- Image processing errors
-- API generation failures
-- Proper HTTP status codes and error messages
 
 ## Development
 
 To extend the API:
-1. Add new endpoints in `fastapi_fitter.py`
+1. Add new endpoints in `server.py`
 2. Update `requirements.txt` for new dependencies
 3. Test using the `/docs` endpoint or test client
 4. Update this README with new features
