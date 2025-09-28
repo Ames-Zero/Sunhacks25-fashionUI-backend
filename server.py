@@ -7,7 +7,7 @@ from PIL import Image
 from io import BytesIO
 from typing import Optional, Dict, Any
 from bs4 import BeautifulSoup
-from mongo_search import query_products, add_to_closet
+from mongo_search import query_products, add_to_closet, get_all_closet_items, clear_closets_collection
 
 import re
 import os
@@ -31,6 +31,14 @@ if not api_key:
     raise ValueError("GOOGLE_API_KEY environment variable is required. Please set your Google AI Studio API key.")
 
 client = genai.Client(api_key=api_key)
+
+# Clear closets collection on startup
+print("🚀 Starting Fashion Fitter API...")
+clear_result = clear_closets_collection()
+if clear_result["success"]:
+    print(f"✅ Startup: {clear_result['message']} ({clear_result['deleted_count']} items removed)")
+else:
+    print(f"⚠️ Startup warning: {clear_result['message']}")
 
 def scrape_amazon_product(url):
     headers = {
@@ -247,6 +255,86 @@ async def add_to_closet_endpoint(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error adding item to closet: {str(e)}")
+
+@app.get("/closet-items")
+async def get_closet_items_endpoint(
+    user_id: Optional[str] = None,
+    limit: Optional[int] = None
+):
+    """
+    Get all items from the closets collection
+    
+    Args:
+        user_id (str, optional): Filter by specific user ID
+        limit (int, optional): Limit the number of results returned
+    
+    Returns:
+        JSON response with closet items
+    """
+    try:
+        # Call the MongoDB function to get closet items
+        closet_items = get_all_closet_items(user_id=user_id, limit=limit)
+        
+        # Format the response
+        formatted_items = []
+        for item in closet_items:
+            formatted_item = {
+                "id": str(item.get("_id", "")),
+                "closet_item_id": item.get("closet_item_id", ""),
+                "type": item.get("type", "N/A"),
+                "product_name": item.get("product_name") or item.get("title", "N/A"),
+                "brand": item.get("brand", "N/A"),
+                "colors": item.get("colors", {}),
+                "category": item.get("category", "N/A"),
+                "subcategory": item.get("subcategory", "N/A"),
+                "price": item.get("metadata", {}).get("price", "N/A"),
+                "user_id": item.get("closet_metadata", {}).get("user_id") or item.get("user_id", "N/A"),
+                "created_at": str(item.get("created_at", "N/A")),
+                "image_url": item.get("image_url", "") or item.get("urls", {}).get("image", ""),
+                "product_url": item.get("product_url", "") or item.get("urls", {}).get("product", ""),
+                "notes": item.get("closet_metadata", {}).get("notes", ""),
+                "metadata": item.get("metadata", {})
+            }
+            formatted_items.append(formatted_item)
+        
+        return JSONResponse(content={
+            "success": True,
+            "total_items": len(closet_items),
+            "user_filter": user_id,
+            "limit_applied": limit,
+            "closet_items": formatted_items
+        })
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving closet items: {str(e)}")
+
+@app.delete("/closet-items")
+async def clear_closet_items_endpoint():
+    """
+    Clear all items from the closets collection
+    
+    Returns:
+        JSON response with clear operation results
+    """
+    try:
+        # Call the MongoDB clear function
+        result = clear_closets_collection()
+        
+        if result["success"]:
+            return JSONResponse(content={
+                "success": True,
+                "message": result["message"],
+                "deleted_count": result["deleted_count"],
+                "initial_count": result.get("initial_count", 0),
+                "final_count": result.get("final_count", 0)
+            })
+        else:
+            raise HTTPException(status_code=500, detail=result["message"])
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error clearing closet items: {str(e)}")
 
 @app.get("/")
 async def root():
