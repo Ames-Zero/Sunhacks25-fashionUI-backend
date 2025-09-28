@@ -4,7 +4,7 @@ from pymongo.server_api import ServerApi
 import os
 
 DB_PASSWORD = os.getenv("MONGO_PASSWORD")
-uri = os.getenv("MONGO_URI")
+uri = f"mongodb+srv://kshitijdumbre216_db_user:{DB_PASSWORD}@fashion.ub13u8q.mongodb.net/?retryWrites=true&w=majority&appName=Fashion"
 
 # Create a new client and connect to the server
 

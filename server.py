@@ -1,6 +1,7 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Body
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 from google import genai
 from google.genai import types
 from PIL import Image
@@ -25,6 +26,13 @@ S3_BUCKET_NAME = os.getenv('S3_BUCKET')
 
 app = FastAPI(title="Fashion Fitter API", description="API to generate fashion photos by combining dress and model images")
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, specify your extension's origin
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 # Initialize Google Gemini client with API key
 api_key = os.getenv('GOOGLE_API_KEY')
 if not api_key:
