@@ -8,7 +8,7 @@ from PIL import Image
 from io import BytesIO
 from typing import Optional, Dict, Any
 from bs4 import BeautifulSoup
-from mongo_search import query_products, add_to_closet, get_all_closet_items, clear_closets_collection
+from mongo_search import query_products, add_to_closet, add_product_to_closet, get_all_closet_items, clear_closets_collection, get_outfit_suggestions_with_llm
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -203,6 +203,22 @@ async def search_products_endpoint(
         # Format the response
         formatted_results = []
         for product in results:
+            # Handle different possible URL field structures
+            urls = product.get("urls", {})
+            image_url = ""
+            product_url = ""
+            
+            # Try different possible field names for URLs
+            if isinstance(urls, dict):
+                image_url = urls.get("image", "") or urls.get("image_url", "")
+                product_url = urls.get("product", "") or urls.get("product_url", "")
+            
+            # Fallback to direct fields if urls dict doesn't exist
+            if not image_url:
+                image_url = product.get("image_url", "")
+            if not product_url:
+                product_url = product.get("product_url", "")
+            
             formatted_product = {
                 "id": str(product.get("_id", "")),
                 "product_name": product.get("product_name", "N/A"),
@@ -212,8 +228,8 @@ async def search_products_endpoint(
                 "colors": product.get("colors", {}),
                 "price": product.get("metadata", {}).get("price", "N/A"),
                 "rating": product.get("metadata", {}).get("rating", "N/A"),
-                "image_url": product.get("urls", {}).get("image", ""),
-                "product_url": product.get("urls", {}).get("product", ""),
+                "image_url": image_url,
+                "product_url": product_url,
                 "attributes": product.get("attributes", {})
             }
             formatted_results.append(formatted_product)
@@ -230,54 +246,47 @@ async def search_products_endpoint(
 
 @app.post("/add-to-closet")
 async def add_to_closet_endpoint(
-    closet_item: Dict[Any, Any] = Body(..., description="Item data to add to closet")
+    product_id: str = Form(..., description="Product ID from the products collection")
 ):
     """
-    Add an item to the user's closet collection
-
+    Add a product to the closet collection using product ID
+    
     Args:
-        closet_item: Dictionary containing the item data to add to closet
-
+        product_id: MongoDB _id of the product from products collection
+        
     Returns:
         JSON response with insertion confirmation
     """
     try:
-        if not closet_item:
-            raise HTTPException(status_code=400, detail="Closet item data is required")
-
-        # Validate required fields (basic validation)
-        if "type" not in closet_item:
-            closet_item["type"] = "manual_add"  # Default type
-
-        # Call the MongoDB add function
-        result_id = add_to_closet(closet_item)
-
+        if not product_id or not product_id.strip():
+            raise HTTPException(status_code=400, detail="Product ID is required")
+        
+        # Call the simplified MongoDB add function
+        result_id = add_product_to_closet(product_id.strip())
+        
         if result_id:
             return JSONResponse(content={
                 "success": True,
-                "message": "Item successfully added to closet",
-                "closet_item_id": closet_item.get("closet_item_id"),
+                "message": "Product successfully added to closet",
                 "mongodb_id": result_id,
-                "item_type": closet_item.get("type", "unknown")
+                "product_id": product_id
             })
         else:
-            raise HTTPException(status_code=500, detail="Failed to add item to closet")
-
+            raise HTTPException(status_code=404, detail="Product not found or failed to add to closet")
+            
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error adding item to closet: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error adding product to closet: {str(e)}")
 
 @app.get("/closet-items")
 async def get_closet_items_endpoint(
-    user_id: Optional[str] = None,
     limit: Optional[int] = None
 ):
     """
     Get all items from the closets collection
 
     Args:
-        user_id (str, optional): Filter by specific user ID
         limit (int, optional): Limit the number of results returned
 
     Returns:
@@ -285,34 +294,27 @@ async def get_closet_items_endpoint(
     """
     try:
         # Call the MongoDB function to get closet items
-        closet_items = get_all_closet_items(user_id=user_id, limit=limit)
+        closet_items = get_all_closet_items(limit=limit)
 
-        # Format the response
+        # Format the response with only essential data
         formatted_items = []
         for item in closet_items:
             formatted_item = {
                 "id": str(item.get("_id", "")),
-                "closet_item_id": item.get("closet_item_id", ""),
-                "type": item.get("type", "N/A"),
                 "product_name": item.get("product_name") or item.get("title", "N/A"),
                 "brand": item.get("brand", "N/A"),
-                "colors": item.get("colors", {}),
                 "category": item.get("category", "N/A"),
                 "subcategory": item.get("subcategory", "N/A"),
+                "colors": item.get("colors", {}),
                 "price": item.get("metadata", {}).get("price", "N/A"),
-                "user_id": item.get("closet_metadata", {}).get("user_id") or item.get("user_id", "N/A"),
-                "created_at": str(item.get("created_at", "N/A")),
                 "image_url": item.get("image_url", "") or item.get("urls", {}).get("image", ""),
-                "product_url": item.get("product_url", "") or item.get("urls", {}).get("product", ""),
-                "notes": item.get("closet_metadata", {}).get("notes", ""),
-                "metadata": item.get("metadata", {})
+                "product_url": item.get("product_url", "") or item.get("urls", {}).get("product", "")
             }
             formatted_items.append(formatted_item)
 
         return JSONResponse(content={
             "success": True,
             "total_items": len(closet_items),
-            "user_filter": user_id,
             "limit_applied": limit,
             "closet_items": formatted_items
         })
@@ -347,6 +349,57 @@ async def clear_closet_items_endpoint():
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error clearing closet items: {str(e)}")
+
+@app.post("/outfit-suggestions")
+async def get_outfit_suggestions_endpoint(
+    query: str = Form(..., description="Natural language query describing the occasion or outfit preference")
+):
+    """
+    Get AI-powered outfit suggestions based on closet items and natural language query
+    
+    Args:
+        query: Natural language query like "casual date night", "business meeting", "weekend brunch"
+        
+    Returns:
+        JSON response with AI-generated outfit suggestions from closet items
+    """
+    try:
+        if not query or not query.strip():
+            raise HTTPException(status_code=400, detail="Query parameter is required and cannot be empty")
+        
+        # Call the MongoDB + LLM function
+        result = get_outfit_suggestions_with_llm(query.strip())
+        
+        if result["success"]:
+            return JSONResponse(content={
+                "success": True,
+                "query": result["query"],
+                "total_closet_items": result["total_closet_items"],
+                "message": result["message"],
+                "stylist_suggestions": result["stylist_suggestions"],
+                "available_items_count": result["available_items"]
+            })
+        else:
+            # Handle case where no items found or other errors
+            if "No items found in closet" in result["message"]:
+                return JSONResponse(
+                    content={
+                        "success": False,
+                        "query": query,
+                        "message": result["message"],
+                        "stylist_suggestions": "I'd love to help you style an outfit, but it looks like your closet is empty! Start by adding some items to your closet collection, and I'll be able to suggest amazing outfits for any occasion.",
+                        "total_closet_items": 0,
+                        "available_items_count": 0
+                    },
+                    status_code=404
+                )
+            else:
+                raise HTTPException(status_code=500, detail=result["message"])
+                
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error generating outfit suggestions: {str(e)}")
 
 @app.get("/")
 async def root():

@@ -149,10 +149,104 @@ def query_products(natural_language_query):
         print(f"Error querying products: {e}")
         return []
 
+def inspect_products_schema():
+    """
+    Inspect the actual structure of products in the database
+    """
+    try:
+        products_collection = db["products"]
+        sample_product = products_collection.find_one()
+        
+        if sample_product:
+            print("Sample product structure:")
+            for key, value in sample_product.items():
+                if isinstance(value, dict):
+                    print(f"  {key}: {list(value.keys()) if value else 'Empty dict'}")
+                else:
+                    print(f"  {key}: {type(value).__name__}")
+            return sample_product
+        return None
+    except Exception as e:
+        print(f"Error inspecting products schema: {e}")
+        return None
+
+def get_product_by_id(product_id):
+    """
+    Get a product from the products collection by its _id
+    
+    Args:
+        product_id (str): The MongoDB _id of the product
+        
+    Returns:
+        dict: Product document or None if not found
+    """
+    try:
+        from bson import ObjectId
+        products_collection = db["products"]
+        
+        # Convert string ID to ObjectId
+        object_id = ObjectId(product_id)
+        product = products_collection.find_one({"_id": object_id})
+        
+        return product
+    except Exception as e:
+        print(f"Error getting product by ID: {e}")
+        return None
+
+def add_product_to_closet(product_id):
+    """
+    Add a product from the products collection to the closets collection
+    
+    Args:
+        product_id (str): The MongoDB _id of the product to add
+        
+    Returns:
+        str: The inserted document ID or None if failed
+    """
+    try:
+        # Get the product from products collection
+        product = get_product_by_id(product_id)
+        if not product:
+            print(f"Product with ID {product_id} not found")
+            return None
+            
+        # Get or create the closets collection
+        closets_collection = db["closets"]
+        
+        # Create closet item from product data
+        closet_item = {
+            "type": "product",
+            "original_product_id": str(product["_id"]),
+            "product_name": product.get("product_name", "N/A"),
+            "brand": product.get("brand", "N/A"), 
+            "category": product.get("category", "N/A"),
+            "subcategory": product.get("subcategory", "N/A"),
+            "colors": product.get("colors", {}),
+            "metadata": product.get("metadata", {}),
+            "urls": product.get("urls", {}),
+            "attributes": product.get("attributes", {})
+        }
+        
+        # Add unique closet item ID
+        import uuid
+        closet_item["closet_item_id"] = str(uuid.uuid4())
+        
+        # Insert the document
+        result = closets_collection.insert_one(closet_item)
+        
+        print(f"Successfully added product to closet with ID: {result.inserted_id}")
+        return str(result.inserted_id)
+        
+    except Exception as e:
+        print(f"Error adding product to closet: {e}")
+        return None
+
 def add_to_closet(closet_item):
     """
     Add a given item/row to the 'closets' collection in MongoDB
     Creates the collection if it doesn't exist
+    
+    DEPRECATED: Use add_product_to_closet() for adding products by ID
 
     Args:
         closet_item (dict): The item data to add to closets collection
@@ -169,10 +263,6 @@ def add_to_closet(closet_item):
         if "closets" not in existing_collections:
             print("Creating new 'closets' collection...")
 
-        # Add timestamp if not provided
-        # if "created_at" not in closet_item:
-        #     from datetime import datetime
-        #     closet_item["created_at"] = datetime.utcnow()
 
         # Add an ID field if not provided for better tracking
         if "closet_item_id" not in closet_item:
@@ -197,12 +287,11 @@ def add_to_closet(closet_item):
         print(f"Error adding item to closet: {e}")
         return None
 
-def get_all_closet_items(user_id=None, limit=None):
+def get_all_closet_items(limit=None):
     """
     Display all data entries from the 'closets' collection
 
     Args:
-        user_id (str, optional): Filter by specific user ID
         limit (int, optional): Limit the number of results returned
 
     Returns:
@@ -217,39 +306,24 @@ def get_all_closet_items(user_id=None, limit=None):
             print("❌ 'closets' collection doesn't exist yet")
             return []
 
-        # Build query filter
-        query_filter = {}
-        if user_id:
-            query_filter = {
-                "$or": [
-                    {"closet_metadata.user_id": user_id},
-                    {"user_id": user_id}  # Handle both possible user_id locations
-                ]
-            }
-
         # Get total count
-        total_count = closets_collection.count_documents(query_filter)
+        total_count = closets_collection.count_documents({})
 
         if total_count == 0:
-            if user_id:
-                print(f"❌ No closet items found for user: {user_id}")
-            else:
-                print("❌ No items found in closets collection")
+            print("❌ No items found in closets collection")
             return []
 
         print(f"👕 Closets Collection Data")
         print("=" * 60)
         print(f"Total items: {total_count}")
-        if user_id:
-            print(f"Filtered by user: {user_id}")
         print("-" * 60)
 
         # Execute query
         if limit:
-            cursor = closets_collection.find(query_filter).limit(limit)
+            cursor = closets_collection.find({}).limit(limit)
             print(f"Showing first {limit} items:")
         else:
-            cursor = closets_collection.find(query_filter)
+            cursor = closets_collection.find({})
             print("Showing all items:")
 
         results = list(cursor)
@@ -284,19 +358,9 @@ def get_all_closet_items(user_id=None, limit=None):
             price = metadata.get('price', 'N/A')
             print(f"   Price: ${price}")
 
-            # Display user info
-            closet_metadata = item.get('closet_metadata', {})
-            user_id_display = closet_metadata.get('user_id') or item.get('user_id', 'N/A')
-            print(f"   User ID: {user_id_display}")
-
             # Display creation date
             created_at = item.get('created_at', 'N/A')
             print(f"   Created: {created_at}")
-
-            # Display notes if available
-            notes = closet_metadata.get('notes', '')
-            if notes:
-                print(f"   Notes: {notes}")
 
             # Display image URL if available
             image_url = item.get('image_url', '') or item.get('urls', {}).get('image', '')
@@ -366,6 +430,121 @@ def clear_closets_collection():
             "deleted_count": 0
         }
 
+def get_outfit_suggestions_with_llm(user_query):
+    """
+    Get outfit suggestions based on natural language query using closet items and Gemini LLM
+    
+    Args:
+        user_query (str): Natural language query about the occasion or outfit preference
+        
+    Returns:
+        dict: Outfit suggestions with LLM-generated explanation
+    """
+    try:
+        from google import genai
+        import os
+        
+        # Get all closet items
+        closet_items = get_all_closet_items()
+        
+        if not closet_items:
+            return {
+                "success": False,
+                "message": "No items found in closet",
+                "suggestions": []
+            }
+        
+        # Format closet items for LLM
+        items_description = []
+        for item in closet_items:
+            item_desc = {
+                "id": str(item.get("_id", "")),
+                "name": item.get("product_name") or item.get("title", "Unknown Item"),
+                "category": item.get("category", "N/A"),
+                "subcategory": item.get("subcategory", "N/A"),
+                "colors": item.get("colors", {}),
+                "brand": item.get("brand", "N/A"),
+                "price": item.get("metadata", {}).get("price", "N/A"),
+                "type": item.get("type", "N/A")
+            }
+            
+            # Create a readable description
+            primary_color = item_desc["colors"].get("primary", "unknown color")
+            secondary_color = item_desc["colors"].get("secondary", "")
+            color_desc = f"{primary_color}" + (f" with {secondary_color}" if secondary_color and secondary_color != primary_color else "")
+            
+            formatted_desc = f"- {item_desc['name']} ({item_desc['subcategory']}) in {color_desc} by {item_desc['brand']} - ${item_desc['price']}"
+            items_description.append(formatted_desc)
+        
+        # Create prompt for Gemini
+        closet_items_text = "\n".join(items_description)
+        
+        prompt = f"""
+You are a professional fashion stylist with years of experience. A user is asking for outfit suggestions from their personal closet for the following occasion/query: "{user_query}"
+
+Here are all the items available in their closet:
+{closet_items_text}
+
+Please provide outfit suggestions that:
+1. Are appropriate for the occasion mentioned in the query
+2. Use only the items available in their closet
+3. Consider color coordination, style matching, and appropriateness
+4. Include styling tips and explanations for your choices
+
+Format your response as follows:
+- Suggest 2-3 complete outfit combinations if possible
+- For each outfit, explain why it works for the occasion
+- Provide styling tips (accessories, how to wear, etc.)
+- If the closet lacks certain essential items for the occasion, mention what's missing
+- Be encouraging and positive in your tone
+
+Keep your response conversational and helpful, as if you're a personal stylist talking to a friend.
+"""
+
+        # Initialize Gemini client
+        api_key = os.getenv('GOOGLE_API_KEY')
+        if not api_key:
+            return {
+                "success": False,
+                "message": "Google API key not configured",
+                "suggestions": []
+            }
+        
+        client = genai.Client(api_key=api_key)
+        
+        # Generate outfit suggestions using Gemini
+        response = client.models.generate_content(
+            model='gemini-2.5-pro',  # Using text-only model for outfit suggestions
+            contents=[prompt]
+        )
+        
+        # Extract the generated text
+        if response.candidates and len(response.candidates) > 0:
+            suggestion_text = response.candidates[0].content.parts[0].text
+            
+            return {
+                "success": True,
+                "query": user_query,
+                "total_closet_items": len(closet_items),
+                "stylist_suggestions": suggestion_text,
+                "available_items": len(closet_items),
+                "message": "Outfit suggestions generated successfully"
+            }
+        else:
+            return {
+                "success": False,
+                "message": "Failed to generate outfit suggestions from LLM",
+                "suggestions": []
+            }
+            
+    except Exception as e:
+        print(f"Error generating outfit suggestions: {e}")
+        return {
+            "success": False,
+            "message": f"Error generating outfit suggestions: {str(e)}",
+            "suggestions": []
+        }
+
 def get_closet_summary():
     """
     Display a summary of closets collection statistics
@@ -400,22 +579,7 @@ def get_closet_summary():
             type_counts[item_type] = count
             print(f"  - {item_type}: {count} items")
 
-        # Count by user
-        print(f"\nUsers:")
-        user_counts = {}
-        # Check both possible user_id locations
-        for user_id in closets_collection.distinct("closet_metadata.user_id"):
-            if user_id:
-                count = closets_collection.count_documents({"closet_metadata.user_id": user_id})
-                user_counts[user_id] = count
-                print(f"  - {user_id}: {count} items")
 
-        # Check alternative user_id location
-        for user_id in closets_collection.distinct("user_id"):
-            if user_id and user_id not in user_counts:
-                count = closets_collection.count_documents({"user_id": user_id})
-                user_counts[user_id] = count
-                print(f"  - {user_id}: {count} items")
 
         # Most recent items
         print(f"\nMost recent items:")
@@ -428,7 +592,6 @@ def get_closet_summary():
         summary = {
             "total_items": total_items,
             "type_counts": type_counts,
-            "user_counts": user_counts,
             "recent_items": len(recent_items)
         }
 
@@ -686,7 +849,6 @@ def test_add_to_closet():
         "title": "Blue Cotton Shirt - Generated",
         "image_url": "https://example-bucket.s3.amazonaws.com/generated_123.png",
         "original_product_id": "some_product_id",
-        "user_id": "user_123",
         "metadata": {
             "color": "blue",
             "category": "shirts",
@@ -700,7 +862,7 @@ def test_add_to_closet():
         "title": "Red T-Shirt from Amazon",
         "product_url": "https://amazon.com/product/xyz",
         "image_url": "https://amazon.com/image.jpg",
-        "user_id": "user_456",
+
         "price": 25.99,
         "metadata": {
             "color": "red",
@@ -733,9 +895,9 @@ def test_closet_display():
     print("\n📦 Testing display all closet items...")
     get_all_closet_items(limit=5)  # Limit to 5 for testing
 
-    # Test 3: Display items for specific user
-    print("\n👤 Testing display items for specific user...")
-    get_all_closet_items(user_id="test_user_123", limit=3)
+    # Test 3: Display limited items
+    print("\n👤 Testing display with limit...")
+    get_all_closet_items(limit=3)
 
     print(f"\n✅ Closet display tests completed!")
 
@@ -766,5 +928,91 @@ def test_clear_closets():
     get_closet_summary()
 
     print(f"\n✅ Clear test completed!")
+
+def test_outfit_suggestions():
+    """Test function to demonstrate outfit suggestions functionality"""
+    print("🧪 Testing Outfit Suggestions with LLM")
+    print("=" * 50)
+    
+    # First, add some test items to the closet if it's empty
+    closet_items = get_all_closet_items(limit=1)
+    if not closet_items:
+        print("📦 Adding test items to closet for demonstration...")
+        
+        test_items = [
+            {
+                "type": "test_item",
+                "product_name": "Navy Blue Blazer",
+                "category": "Clothing",
+                "subcategory": "Jackets & Coats",
+                "colors": {"primary": "navy blue", "secondary": ""},
+                "brand": "Calvin Klein",
+                "metadata": {"price": "149.99"}
+            },
+            {
+                "type": "test_item", 
+                "product_name": "White Cotton Dress Shirt",
+                "category": "Clothing",
+                "subcategory": "Shirts",
+                "colors": {"primary": "white", "secondary": ""},
+                "brand": "Brooks Brothers",
+                "metadata": {"price": "79.99"}
+            },
+            {
+                "type": "test_item",
+                "product_name": "Dark Wash Jeans",
+                "category": "Clothing", 
+                "subcategory": "Jeans",
+                "colors": {"primary": "dark blue", "secondary": ""},
+                "brand": "Levi's",
+                "metadata": {"price": "89.99"}
+            },
+            {
+                "type": "test_item",
+                "product_name": "Black Leather Shoes",
+                "category": "Shoes",
+                "subcategory": "Dress Shoes", 
+                "colors": {"primary": "black", "secondary": ""},
+                "brand": "Cole Haan",
+                "metadata": {"price": "199.99"}
+            }
+        ]
+        
+        for item in test_items:
+            add_to_closet(item)
+        
+        print("✅ Test items added to closet")
+    
+    # Test different occasion queries
+    test_queries = [
+        "business meeting",
+        "casual date night", 
+        "weekend brunch",
+        "formal dinner party",
+        "job interview"
+    ]
+    
+    print(f"\n🎯 Testing outfit suggestions for different occasions:")
+    print("-" * 60)
+    
+    for query in test_queries:
+        print(f"\n🔍 Testing query: '{query}'")
+        print("=" * 40)
+        
+        result = get_outfit_suggestions_with_llm(query)
+        
+        if result["success"]:
+            print(f"✅ Query: {result['query']}")
+            print(f"📊 Available items: {result['total_closet_items']}")
+            print(f"👗 Stylist suggestions:")
+            print("-" * 30)
+            print(result['stylist_suggestions'])
+            print("\n" + "="*60)
+        else:
+            print(f"❌ Failed: {result['message']}")
+        
+        print()
+    
+    print(f"\n✅ Outfit suggestions tests completed!")
 
 # Example usage functions
