@@ -1,6 +1,8 @@
 from pymongo.mongo_client import MongoClient
 from pymongo.server_api import ServerApi
 from dotenv import load_dotenv
+import ssl
+import certifi
 
 # Load environment variables from .env file
 load_dotenv()
@@ -10,9 +12,13 @@ import os
 DB_PASSWORD = os.getenv("MONGO_PASSWORD")
 uri = f"mongodb+srv://kshitijdumbre216_db_user:{DB_PASSWORD}@fashion.ub13u8q.mongodb.net/?retryWrites=true&w=majority&appName=Fashion"
 
-# Create a new client and connect to the server
-
-client = MongoClient(uri, server_api=ServerApi('1'))
+# Create a new client and connect to the server with proper SSL configuration
+# This fixes SSL certificate verification issues on macOS
+client = MongoClient(
+    uri, 
+    server_api=ServerApi('1'),
+    tlsCAFile=certifi.where()
+)
 
 
 try:
