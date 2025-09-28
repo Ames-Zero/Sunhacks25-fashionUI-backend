@@ -9,6 +9,10 @@ from io import BytesIO
 from typing import Optional, Dict, Any
 from bs4 import BeautifulSoup
 from mongo_search import query_products, add_to_closet, get_all_closet_items, clear_closets_collection
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 import re
 import os
@@ -71,12 +75,12 @@ def scrape_amazon_product(url):
 
         # Extract High-Resolution Image URLs using regex
         image_urls = re.findall('"hiRes":"(https://.+?)"', response.text)
-        
+
         # Get breadcrumbs text
         breadcrumbs = soup.select("#wayfinding-breadcrumbs_feature_div ul li span a")
         categories = [b.get_text(strip=True) for b in breadcrumbs]
         category = categories[-1] if categories else "N/A"
-        
+
         product_about_ul = soup.find("ul", {"class": "a-unordered-list a-vertical a-spacing-small"})
         product_about_info = [li.get_text(strip=True) for li in product_about_ul.find_all("li")] if product_about_ul else []
 
@@ -97,8 +101,8 @@ def scrape_amazon_product(url):
 async def generate_photo_and_data(
     url: str = Form(..., description="Amazon product URL to scrape"),
     prompt: Optional[str] = Form(
-        default="""Create a professional e-commerce fashion photo. 
-        Take the dress from the first image and let the person from the second image wear it. 
+        default="""Create a professional e-commerce fashion photo.
+        Take the dress from the first image and let the person from the second image wear it.
         Generate a realistic, full-body shot of the person wearing the dress, with the lighting and shadows adjusted to match the environment.
         """,
         description="Custom prompt for image generation"
@@ -113,20 +117,20 @@ async def generate_photo_and_data(
     if not page_metadata or not image_urls:
         print(page_metadata, image_urls)
         raise HTTPException(status_code=400, detail="Failed to scrape product data or no images found from the provided URL")
-    
+
     if len(image_urls) >= 1:
         dress_image_url = image_urls[0]
     else:
         raise HTTPException(status_code=400, detail="No product images found from the provided URL")
-    
+
     # Download the dress image from the URL
     try:
         dress_response = requests.get(dress_image_url)
         dress_response.raise_for_status()
         dress_pil = Image.open(BytesIO(dress_response.content))
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to download dress image: {str(e)}")   
-    
+        raise HTTPException(status_code=400, detail=f"Failed to download dress image: {str(e)}")
+
     # Load the local model image
     try:
         with open(MODEL_IMAGE_PATH, 'rb') as model_file:
@@ -136,32 +140,32 @@ async def generate_photo_and_data(
         raise HTTPException(status_code=400, detail=f"Failed to load model image: {str(e)}")
 
     try:
-        
+
         response = client.models.generate_content(
             model=IMAGE_GENERATION_MODEL,
             contents=[dress_pil, model_pil, prompt],
         )
-        
+
         image_parts = [
             part.inline_data.data
             for part in response.candidates[0].content.parts
             if part.inline_data
         ]
-        
+
         if not image_parts:
             raise HTTPException(status_code=500, detail="No image generated from the model")
-        
+
         generated_image = Image.open(BytesIO(image_parts[0]))
-        
+
         # Convert PIL image to buffer for S3 upload
         buffer = BytesIO()
         generated_image.save(buffer, format='PNG')
-        
+
         # Upload image to S3 and make it publicly accessible
         s3_client = boto3.client("s3")
         bucket_name = S3_BUCKET_NAME
         s3_key = f"generated_images/{uuid.uuid4()}.png"
-        
+
         buffer.seek(0)
         s3_client.upload_fileobj(buffer, bucket_name, s3_key, ExtraArgs={'ContentType': 'image/png'})
         image_url = s3_client.generate_presigned_url('get_object', Params={'Bucket': bucket_name, 'Key': s3_key}, ExpiresIn=3600)  # 1 hour expiry
@@ -172,7 +176,7 @@ async def generate_photo_and_data(
             "metadata": page_metadata,
             "image_format": "PNG"
         })
-        
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error generating fashion photo: {str(e)}")
 
@@ -182,20 +186,20 @@ async def search_products_endpoint(
 ):
     """
     Search products using natural language query
-    
+
     Args:
         query: Natural language search query (e.g., "blue shirts", "red t-shirts")
-    
+
     Returns:
         JSON response with matching products (max 10)
     """
     try:
         if not query or not query.strip():
             raise HTTPException(status_code=400, detail="Query parameter is required and cannot be empty")
-        
+
         # Call the MongoDB query function
         results = query_products(query.strip())
-        
+
         # Format the response
         formatted_results = []
         for product in results:
@@ -213,14 +217,14 @@ async def search_products_endpoint(
                 "attributes": product.get("attributes", {})
             }
             formatted_results.append(formatted_product)
-        
+
         return JSONResponse(content={
             "success": True,
             "query": query,
             "total_results": len(results),
             "products": formatted_results
         })
-        
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error searching products: {str(e)}")
 
@@ -230,24 +234,24 @@ async def add_to_closet_endpoint(
 ):
     """
     Add an item to the user's closet collection
-    
+
     Args:
         closet_item: Dictionary containing the item data to add to closet
-    
+
     Returns:
         JSON response with insertion confirmation
     """
     try:
         if not closet_item:
             raise HTTPException(status_code=400, detail="Closet item data is required")
-        
+
         # Validate required fields (basic validation)
         if "type" not in closet_item:
             closet_item["type"] = "manual_add"  # Default type
-        
+
         # Call the MongoDB add function
         result_id = add_to_closet(closet_item)
-        
+
         if result_id:
             return JSONResponse(content={
                 "success": True,
@@ -258,7 +262,7 @@ async def add_to_closet_endpoint(
             })
         else:
             raise HTTPException(status_code=500, detail="Failed to add item to closet")
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -271,18 +275,18 @@ async def get_closet_items_endpoint(
 ):
     """
     Get all items from the closets collection
-    
+
     Args:
         user_id (str, optional): Filter by specific user ID
         limit (int, optional): Limit the number of results returned
-    
+
     Returns:
         JSON response with closet items
     """
     try:
         # Call the MongoDB function to get closet items
         closet_items = get_all_closet_items(user_id=user_id, limit=limit)
-        
+
         # Format the response
         formatted_items = []
         for item in closet_items:
@@ -304,7 +308,7 @@ async def get_closet_items_endpoint(
                 "metadata": item.get("metadata", {})
             }
             formatted_items.append(formatted_item)
-        
+
         return JSONResponse(content={
             "success": True,
             "total_items": len(closet_items),
@@ -312,7 +316,7 @@ async def get_closet_items_endpoint(
             "limit_applied": limit,
             "closet_items": formatted_items
         })
-        
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error retrieving closet items: {str(e)}")
 
@@ -320,14 +324,14 @@ async def get_closet_items_endpoint(
 async def clear_closet_items_endpoint():
     """
     Clear all items from the closets collection
-    
+
     Returns:
         JSON response with clear operation results
     """
     try:
         # Call the MongoDB clear function
         result = clear_closets_collection()
-        
+
         if result["success"]:
             return JSONResponse(content={
                 "success": True,
@@ -338,7 +342,7 @@ async def clear_closet_items_endpoint():
             })
         else:
             raise HTTPException(status_code=500, detail=result["message"])
-        
+
     except HTTPException:
         raise
     except Exception as e:
