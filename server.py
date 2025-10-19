@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Body
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,6 +8,10 @@ from PIL import Image
 from io import BytesIO
 from typing import Optional, Dict, Any
 from bs4 import BeautifulSoup
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+from webdriver_manager.chrome import ChromeDriverManager
 from pydantic import BaseModel
 from mongo_search import query_products, add_to_closet, add_product_to_closet, get_all_closet_items, clear_closets_collection, get_outfit_suggestions_with_llm
 from dotenv import load_dotenv
@@ -88,61 +92,155 @@ else:
     logger.warning(f"⚠️ Startup warning: {clear_result['message']}")
 
 def scrape_amazon_product(url):
+    """
+    Scrapes Amazon product details including title, size, category, color, price, images, and URL
+    """
     logger.info(f"Starting Amazon product scraping for URL: {url}")
-    headers = {
-        "User-Agent": random.choice([
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.114 Safari/537.36"
-        ])
-    }
-    delay = random.uniform(1, 3)
-    logger.debug(f"Adding random delay of {delay:.2f} seconds to avoid blocking")
-    time.sleep(delay)  # Random delay to avoid blocking
 
-    logger.info(f"Making HTTP request to: {url}")
-    response = requests.get(url, headers=headers)
+    # Setup Chrome options
+    chrome_options = Options()
+    chrome_options.add_argument('--headless=new')  # Updated headless mode
+    chrome_options.add_argument('--no-sandbox')
+    chrome_options.add_argument('--disable-dev-shm-usage')
+    chrome_options.add_argument('--disable-gpu')
+    chrome_options.add_argument('--disable-software-rasterizer')
+    chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+    chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36')
 
-    if response.status_code == 200:
-        logger.info(f"Successfully received response from Amazon (status: {response.status_code})")
-        soup = BeautifulSoup(response.text, 'html.parser')
+    # Try to use system Chrome/Chromium or env override
+    chrome_bin = os.getenv('CHROME_BIN', '/usr/bin/google-chrome')
+    chrome_options.binary_location = chrome_bin  # e.g. '/usr/bin/google-chrome' or '/usr/bin/chromium-browser'
 
-        # Extract Product Title
-        title = soup.find('span', {'id': 'productTitle'}).get_text(strip=True) if soup.find('span', {'id': 'productTitle'}) else 'N/A'
-        color = soup.find('span', {'id': 'inline-twister-expanded-dimension-text-color_name'}).get_text(strip=True) if soup.find('span', {'id': 'inline-twister-expanded-dimension-text-color_name'}) else 'N/A'
-        size = soup.find('span', {'id': 'inline-twister-expanded-dimension-text-size_name'}).get_text(strip=True) if soup.find('span', {'id': 'inline-twister-expanded-dimension-text-size_name'}) else 'N/A'
+    # Initialize the driver
+    try:
+        driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
+    except Exception as e:
+        logger.warning(f"Failed to initialize Chrome driver with {chrome_bin}: {e}")
+        logger.info("Trying alternative approach with chromium-browser...")
+        chrome_options.binary_location = '/usr/bin/chromium-browser'
+        driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
 
-        # Extract Price
-        price = soup.find('span', {'class': 'a-price-whole'}).get_text(strip=True) if soup.find('span', {'class': 'a-price-whole'}) else 'N/A'
+    try:
+        # Load the page
+        driver.get(url)
+        time.sleep(3)  # Wait for page to load
 
-        # Extract High-Resolution Image URLs using regex
-        image_urls = re.findall('"hiRes":"(https://.+?)"', response.text)
-        logger.info(f"Found {len(image_urls)} high-resolution images")
+        # Get page source and parse with BeautifulSoup
+        soup = BeautifulSoup(driver.page_source, 'html.parser')
 
-        # Get breadcrumbs text
-        breadcrumbs = soup.select("#wayfinding-breadcrumbs_feature_div ul li span a")
-        categories = [b.get_text(strip=True) for b in breadcrumbs]
-        category = categories[-1] if categories else "N/A"
-
-        product_about_ul = soup.find("ul", {"class": "a-unordered-list a-vertical a-spacing-small"})
-        product_about_info = [li.get_text(strip=True) for li in product_about_ul.find_all("li")] if product_about_ul else []
-
+        # Initialize product data dictionary
         product_data = {
-            'url': url,
-            'title': title,
-            'price': price,
-            'color': color,
-            'size': size,
-            'category': category,
-            'product_about_info': product_about_info
+            'product_url': url,
+            'title': None,
+            'price': None,
+            'category': None,
+            'color': None,
+            'size': None,
+            'image_urls': []
         }
 
-        logger.info(f"Successfully scraped product: {title[:50]}...")
+        # Extract Title
+        try:
+            title_element = soup.find('span', {'id': 'productTitle'})
+            if title_element:
+                product_data['title'] = title_element.get_text().strip()
+        except Exception as e:
+            logger.debug(f"Error extracting title: {e}")
+
+        # Extract Price
+        try:
+            # Try different price selectors
+            price_whole = soup.find('span', {'class': 'a-price-whole'})
+            price_fraction = soup.find('span', {'class': 'a-price-fraction'})
+
+            if price_whole and price_fraction:
+                product_data['price'] = f"${price_whole.get_text().strip()}{price_fraction.get_text().strip()}"
+            else:
+                # Alternative price selector
+                price_element = soup.find('span', {'class': 'a-offscreen'})
+                if price_element:
+                    product_data['price'] = price_element.get_text().strip()
+        except Exception as e:
+            logger.debug(f"Error extracting price: {e}")
+
+        # Extract Category (from breadcrumbs)
+        try:
+            breadcrumb = soup.find('div', {'id': 'wayfinding-breadcrumbs_feature_div'})
+            if breadcrumb:
+                categories = breadcrumb.find_all('a', {'class': 'a-link-normal'})
+                product_data['category'] = ' > '.join([cat.get_text().strip() for cat in categories])
+        except Exception as e:
+            logger.debug(f"Error extracting category: {e}")
+
+        # Extract Color
+        try:
+            # Look for color in product details
+            color_element = soup.find('span', string=lambda text: text and 'Color' in text)
+            if color_element:
+                color_value = color_element.find_next('span')
+                if color_value:
+                    product_data['color'] = color_value.get_text().strip()
+
+            # Alternative: Look in variation section
+            if not product_data['color']:
+                color_name = soup.find('span', {'class': 'selection'})
+                if color_name and 'Color' in color_name.get_text():
+                    product_data['color'] = color_name.get_text().replace('Color name:', '').strip()
+        except Exception as e:
+            logger.debug(f"Error extracting color: {e}")
+
+        # Extract Size
+        try:
+            # Look for size in product details
+            size_element = soup.find('span', string=lambda text: text and 'Size' in text)
+            if size_element:
+                size_value = size_element.find_next('span')
+                if size_value:
+                    product_data['size'] = size_value.get_text().strip()
+
+            # Alternative: Look in variation section
+            if not product_data['size']:
+                size_name = soup.find('span', {'class': 'selection'})
+                if size_name and 'Size' in size_name.get_text():
+                    product_data['size'] = size_name.get_text().replace('Size name:', '').strip()
+        except Exception as e:
+            logger.debug(f"Error extracting size: {e}")
+
+        # Extract Image URLs
+        try:
+            # Main product image
+            main_image = soup.find('img', {'id': 'landingImage'})
+            if main_image and main_image.get('src'):
+                product_data['image_urls'].append(main_image['src'])
+
+            # Alternative images from image block
+            image_block = soup.find('div', {'id': 'altImages'})
+            if image_block:
+                images = image_block.find_all('img')
+                for img in images:
+                    if img.get('src') and img['src'] not in product_data['image_urls']:
+                        # Get high-res version if possible
+                        img_url = img['src'].replace('_SS40_', '_SL1500_')
+                        product_data['image_urls'].append(img_url)
+
+            # Remove duplicates while preserving order
+            product_data['image_urls'] = list(dict.fromkeys(product_data['image_urls']))
+        except Exception as e:
+            logger.debug(f"Error extracting images: {e}")
+
+        logger.info(f"Successfully scraped product: {(product_data.get('title') or 'N/A')[:50]}...")
         logger.debug(f"Product data: {product_data}")
 
-        return product_data, image_urls
-    else:
-        logger.error(f"Failed to fetch data from {url} - HTTP Status: {response.status_code}")
+        return product_data
+
+    except Exception as e:
+        logger.error(f"Error scraping product: {e}")
         return None
+    finally:
+        try:
+            driver.quit()
+        except Exception:
+            pass
 
 @app.post("/generate-photo-and-data")
 async def generate_photo_and_data(request: PhotoGenerationRequest):
@@ -155,12 +253,22 @@ async def generate_photo_and_data(request: PhotoGenerationRequest):
     logger.info(f"Starting photo generation request for URL: {url}")
     logger.debug(f"Custom prompt provided: {prompt[:100]}...")
 
-    page_metadata, image_urls = scrape_amazon_product(url)
-    if not page_metadata or not image_urls:
-        logger.error(f"Failed to scrape product data. Metadata: {page_metadata}, Images found: {len(image_urls) if image_urls else 0}")
-        raise HTTPException(status_code=400, detail="Failed to scrape product data or no images found from the provided URL")
+    scraped = scrape_amazon_product(url)
+    if not scraped:
+        logger.error("Failed to scrape product data")
+        raise HTTPException(status_code=400, detail="Failed to scrape product data from the provided URL")
 
-    if len(image_urls) >= 1:
+    page_metadata = {
+        'url': scraped.get('product_url'),
+        'title': scraped.get('title'),
+        'price': scraped.get('price'),
+        'color': scraped.get('color'),
+        'size': scraped.get('size'),
+        'category': scraped.get('category'),
+    }
+
+    image_urls = scraped.get('image_urls', [])
+    if image_urls:
         dress_image_url = image_urls[0]
         logger.info(f"Selected dress image URL: {dress_image_url}")
     else:
@@ -267,34 +375,20 @@ async def search_products_endpoint(request: SearchProductsRequest):
         # Format the response
         formatted_results = []
         for product in results:
-            # Handle different possible URL field structures
-            urls = product.get("urls", {})
-            image_url = ""
-            product_url = ""
-            
-            # Try different possible field names for URLs
-            if isinstance(urls, dict):
-                image_url = urls.get("image", "") or urls.get("image_url", "")
-                product_url = urls.get("product", "") or urls.get("product_url", "")
-            
-            # Fallback to direct fields if urls dict doesn't exist
-            if not image_url:
-                image_url = product.get("image_url", "")
-            if not product_url:
-                product_url = product.get("product_url", "")
-            
+            # Handle new schema with direct fields
             formatted_product = {
                 "id": str(product.get("_id", "")),
-                "product_name": product.get("product_name", "N/A"),
-                "brand": product.get("brand", "N/A"),
-                "category": product.get("category", "N/A"),
-                "subcategory": product.get("subcategory", "N/A"),
-                "colors": product.get("colors", {}),
-                "price": product.get("metadata", {}).get("price", "N/A"),
-                "rating": product.get("metadata", {}).get("rating", "N/A"),
-                "image_url": image_url,
-                "product_url": product_url,
-                "attributes": product.get("attributes", {})
+                "product_title": product.get("product_title", "N/A"),
+                "product_name": product.get("product_title", "N/A"),  # Alias for compatibility
+                "product_url": product.get("product_url", ""),
+                "product_price": product.get("product_price", "N/A"),
+                "product_color": product.get("product_color", "N/A"),
+                "product_size": product.get("product_size", "N/A"),
+                "product_category": product.get("product_category", "N/A"),
+                "image_url": product.get("image_url", ""),
+                # Legacy compatibility fields
+                "price": product.get("product_price", "N/A"),
+                "category": product.get("product_category", "N/A")
             }
             formatted_results.append(formatted_product)
 
@@ -366,14 +460,16 @@ async def get_closet_items_endpoint(
         for item in closet_items:
             formatted_item = {
                 "id": str(item.get("_id", "")),
-                "product_name": item.get("product_name") or item.get("title", "N/A"),
-                "brand": item.get("brand", "N/A"),
-                "category": item.get("category", "N/A"),
-                "subcategory": item.get("subcategory", "N/A"),
-                "colors": item.get("colors", {}),
-                "price": item.get("metadata", {}).get("price", "N/A"),
-                "image_url": item.get("image_url", "") or item.get("urls", {}).get("image", ""),
-                "product_url": item.get("product_url", "") or item.get("urls", {}).get("product", "")
+                "product_title": item.get("product_title") or item.get("product_name") or item.get("title", "N/A"),
+                "product_name": item.get("product_title") or item.get("product_name") or item.get("title", "N/A"),
+                "product_price": item.get("product_price") or item.get("metadata", {}).get("price", "N/A"),
+                "product_color": item.get("product_color") or item.get("colors", {}).get("primary", "N/A"),
+                "product_category": item.get("product_category") or item.get("category", "N/A"),
+                "product_size": item.get("product_size", "N/A"),
+                "image_url": item.get("image_url", ""),
+                "product_url": item.get("product_url", ""),
+                # Legacy fields for compatibility
+                "price": item.get("product_price") or item.get("metadata", {}).get("price", "N/A")
             }
             formatted_items.append(formatted_item)
 

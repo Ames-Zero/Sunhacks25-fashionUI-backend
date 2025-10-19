@@ -11,3 +11,5 @@ uvicorn==0.37.0
 google-genai==1.39.1
 python-multipart==0.0.20
 python-dotenv==1.0.0
+selenium==4.36.0
+webdriver-manager==4.0.2

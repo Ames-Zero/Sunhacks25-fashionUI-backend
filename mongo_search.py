@@ -9,15 +9,18 @@ load_dotenv()
 
 import os
 
+DB_USERNAME = os.getenv("MONGO_USERNAME",)  # Your MongoDB Atlas username
 DB_PASSWORD = os.getenv("MONGO_PASSWORD")
-uri = f"mongodb+srv://kshitijdumbre216_db_user:{DB_PASSWORD}@fashion.ub13u8q.mongodb.net/?retryWrites=true&w=majority&appName=Fashion"
+MONGO_CLUSTER = os.getenv("MONGO_CLUSTER")  # Your cluster URL (e.g., cluster0.ab1cd.mongodb.net)
+DB_NAME = os.getenv("MONGO_DBNAME")
+# Construct connection string
+uri = f"mongodb+srv://{DB_USERNAME}:{DB_PASSWORD}@{MONGO_CLUSTER}.mongodb.net/?retryWrites=true&w=majority&appName=Fashion"
 
 # Create a new client and connect to the server with proper SSL configuration
 # This fixes SSL certificate verification issues on macOS
 client = MongoClient(
     uri, 
-    server_api=ServerApi('1'),
-    tlsCAFile=certifi.where()
+    server_api=ServerApi('1')
 )
 
 
@@ -28,7 +31,7 @@ except Exception as e:
     print(e)
 
 # Get database reference
-db = client.get_database("fashion_database")  # Actual database name
+db = client.get_database(DB_NAME)  # Actual database name
 
 def query_products(natural_language_query):
     """
@@ -107,28 +110,27 @@ def query_products(natural_language_query):
 
         # Build query filters
         if detected_color:
-            # Search in primary color field (case insensitive)
+            # Search in product_color field (case insensitive)
             color_filter = {
                 "$or": [
-                    {"colors.primary": {"$regex": detected_color, "$options": "i"}},
-                    {"colors.secondary": {"$regex": detected_color, "$options": "i"}},
-                    {"product_name": {"$regex": detected_color, "$options": "i"}}
+                    {"product_color": {"$regex": detected_color, "$options": "i"}},
+                    {"product_title": {"$regex": detected_color, "$options": "i"}}
                 ]
             }
             mongo_query["$and"].append(color_filter)
 
         if detected_category:
-            # Search in subcategory field
-            category_filter = {"subcategory": detected_category}
+            # Search in product_category field
+            category_filter = {"product_category": {"$regex": detected_category, "$options": "i"}}
             mongo_query["$and"].append(category_filter)
 
         # If no specific filters found, do a text search
         if not mongo_query["$and"]:
             mongo_query = {
                 "$or": [
-                    {"product_name": {"$regex": query_lower, "$options": "i"}},
-                    {"colors.primary": {"$regex": query_lower, "$options": "i"}},
-                    {"subcategory": {"$regex": query_lower, "$options": "i"}}
+                    {"product_title": {"$regex": query_lower, "$options": "i"}},
+                    {"product_color": {"$regex": query_lower, "$options": "i"}},
+                    {"product_category": {"$regex": query_lower, "$options": "i"}}
                 ]
             }
 
@@ -145,7 +147,7 @@ def query_products(natural_language_query):
         if results:
             print("\nMatching products:")
             for i, product in enumerate(results[:5], 1):  # Show first 5 in summary
-                print(f"  {i}. {product.get('product_name', 'N/A')} - {product.get('colors', {}).get('primary', 'N/A')} - ${product.get('metadata', {}).get('price', 'N/A')}")
+                print(f"  {i}. {product.get('product_title', 'N/A')} - {product.get('product_color', 'N/A')} - ${product.get('product_price', 'N/A')}")
             if len(results) > 5:
                 print(f"  ... and {len(results) - 5} more")
 
@@ -219,18 +221,23 @@ def add_product_to_closet(product_id):
         # Get or create the closets collection
         closets_collection = db["closets"]
         
-        # Create closet item from product data
+        # Create closet item from product data (new schema)
         closet_item = {
             "type": "product",
             "original_product_id": str(product["_id"]),
-            "product_name": product.get("product_name", "N/A"),
-            "brand": product.get("brand", "N/A"), 
-            "category": product.get("category", "N/A"),
-            "subcategory": product.get("subcategory", "N/A"),
-            "colors": product.get("colors", {}),
-            "metadata": product.get("metadata", {}),
-            "urls": product.get("urls", {}),
-            "attributes": product.get("attributes", {})
+            "product_name": product.get("product_title", "N/A"),
+            "product_title": product.get("product_title", "N/A"),
+            "product_url": product.get("product_url", ""),
+            "image_url": product.get("image_url", ""),
+            "product_price": product.get("product_price", "N/A"),
+            "product_color": product.get("product_color", "N/A"),
+            "product_size": product.get("product_size", "N/A"),
+            "product_category": product.get("product_category", "N/A"),
+            # Legacy fields for backward compatibility
+            "colors": {"primary": product.get("product_color", ""), "secondary": ""},
+            "metadata": {"price": product.get("product_price", "N/A")},
+            "category": product.get("product_category", "N/A"),
+            "subcategory": product.get("product_category", "N/A")
         }
         
         # Add unique closet item ID
@@ -465,11 +472,12 @@ def get_outfit_suggestions_with_llm(user_query):
         # Format closet items for LLM with numbered IDs
         items_for_llm = []
         for i, item in enumerate(closet_items):
-            primary_color = item.get("colors", {}).get("primary", "unknown color")
-            secondary_color = item.get("colors", {}).get("secondary", "")
-            color_desc = f"{primary_color}" + (f" with {secondary_color}" if secondary_color and secondary_color != primary_color else "")
+            # Handle both old and new schema
+            color = item.get("product_color") or item.get("colors", {}).get("primary", "unknown color")
+            category = item.get("product_category") or item.get("subcategory", "N/A")
+            title = item.get("product_title") or item.get("product_name") or item.get("title", "Unknown Item")
             
-            item_desc = f"{i+1}. {item.get('product_name') or item.get('title', 'Unknown Item')} ({item.get('subcategory', 'N/A')}) in {color_desc} by {item.get('brand', 'N/A')}"
+            item_desc = f"{i+1}. {title} ({category}) in {color}"
             items_for_llm.append(item_desc)
         
         # Create prompt for Gemini
@@ -550,14 +558,14 @@ Example:
                             item = closet_items[index]
                             formatted_item = {
                                 "id": str(item.get("_id", "")),
-                                "product_name": item.get("product_name") or item.get("title", "N/A"),
-                                "brand": item.get("brand", "N/A"),
-                                "category": item.get("category", "N/A"),
-                                "subcategory": item.get("subcategory", "N/A"),
-                                "colors": item.get("colors", {}),
-                                "price": item.get("metadata", {}).get("price", "N/A"),
-                                "image_url": item.get("image_url", "") or item.get("urls", {}).get("image", ""),
-                                "product_url": item.get("product_url", "") or item.get("urls", {}).get("product", "")
+                                "product_name": item.get("product_title") or item.get("product_name") or item.get("title", "N/A"),
+                                "product_title": item.get("product_title", "N/A"),
+                                "product_price": item.get("product_price") or item.get("metadata", {}).get("price", "N/A"),
+                                "product_color": item.get("product_color") or item.get("colors", {}).get("primary", "N/A"),
+                                "product_category": item.get("product_category") or item.get("category", "N/A"),
+                                "product_size": item.get("product_size", "N/A"),
+                                "image_url": item.get("image_url", ""),
+                                "product_url": item.get("product_url", "")
                             }
                             suggested_items.append(formatted_item)
                     except (ValueError, IndexError):
